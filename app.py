@@ -20,7 +20,7 @@ from engines.marker_engine import MarkerJob, run_marker_job
 
 
 APP_NAME = "Tidy Text Suite"
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.8.0"
 APP_TAGLINE = "AI-powered OCR, marking, copy checking, and feedback"
 
 # Change these if your desktop build uses different working model names
@@ -29,8 +29,12 @@ DEFAULT_TEXT_MODEL = "gpt-5.4-mini"
 
 # Limiter settings
 USAGE_LIMIT_FILE = "usage_limits.json"
-AI_LIMIT_COUNT = 5
-AI_LIMIT_DAYS = 7
+AI_LIMIT_COUNT = 15
+AI_LIMIT_DAYS = 1
+
+# Optional links
+FEEDBACK_FORM_URL = "https://forms.gle/your-feedback-form"
+PAYHIP_CREDITS_URL = "https://payhip.com/your-credits-product"
 
 
 # -----------------------------
@@ -182,6 +186,13 @@ def resolve_criteria_text(criteria_file, criteria_text_manual: str) -> str:
     return ""
 
 
+def show_optional_link_button(label: str, url: str, help_text: str = "") -> None:
+    if url and "your-" not in url and "forms.gle/your" not in url:
+        st.link_button(label, url, use_container_width=True)
+    else:
+        st.caption(help_text)
+
+
 # -----------------------------
 # Hybrid limiter helpers
 # -----------------------------
@@ -256,11 +267,11 @@ def can_use_shared_ai_key() -> tuple[bool, str]:
     if ip_count >= AI_LIMIT_COUNT or session_count >= AI_LIMIT_COUNT:
         return (
             False,
-            "Free demo limit reached for shared AI usage. Please wait until the weekly window resets or enter your own API key in the sidebar."
+            "Free shared demo limit reached for AI actions in the current 24-hour window. Please try again later, use your own API key in the sidebar, or buy credits when available.",
         )
 
     remaining = AI_LIMIT_COUNT - max(ip_count, session_count)
-    return True, f"Shared AI uses remaining this week: {remaining}"
+    return True, f"Shared AI actions remaining in the current 24-hour window: {remaining}"
 
 
 def record_ai_usage(action: str) -> None:
@@ -648,6 +659,16 @@ with st.sidebar:
 """
         )
 
+    st.subheader("Buy credits")
+    st.caption(
+        "Need more AI runs today? A paid credits system is planned for a later release. For now, you can use your own API key for unlimited personal use in this session."
+    )
+    show_optional_link_button(
+        "Buy credits (coming soon)",
+        PAYHIP_CREDITS_URL,
+        help_text="Add your Payhip credits product link here later to enable a clear upgrade path.",
+    )
+
     vision_model = st.text_input(
         "AI OCR model",
         value=DEFAULT_VISION_MODEL,
@@ -801,7 +822,9 @@ with left_col:
             if conversion_mode == "Handwritten student response":
                 record_ai_usage("handwriting_ocr")
 
-        st.success("Conversion complete. Review the OCR in the output panel, then paste the final text you want assessed into the Exam text field below.")
+        st.success(
+            "Conversion complete. Review the OCR in the output panel, then paste the final text you want assessed into the Exam text field below."
+        )
         st.rerun()
 
     # -------------------------
@@ -828,7 +851,9 @@ with left_col:
     )
 
     if st.session_state["converted_text"].strip() and not st.session_state["exam_text_override"].strip() and exam_text_file is None:
-        st.info("Converted OCR text is available in the Outputs → Converted text tab. Copy the text you want from there, then paste it into the Exam text field here.")
+        st.info(
+            "Converted OCR text is available in the Outputs → Converted text tab. Copy the text you want from there, then paste it into the Exam text field here."
+        )
 
     notes_file = st.file_uploader(
         "Study notes text (TXT/MD)",
@@ -990,6 +1015,20 @@ with right_col:
             "5. Generate the output you need and download it using the buttons below each output."
         )
 
+    with st.expander("Suggested scanning practice", expanded=False):
+        st.markdown(
+            """
+- Scan the written exam response and study notes as **two separate PDF files** before converting to text.
+- Remove, cover, or crop out **student names, school names, and other identifying details** before upload.
+- Use **simple anonymous file names** and keep your own separate note if you need to match files back to students safely.
+- After converting a **criteria or rubric** document to text, quickly review and tidy the formatting if needed so the marking criteria and performance levels are easy for the AI to interpret.
+"""
+        )
+
+    st.warning(
+        "Download outputs as you go. This demo shows current results in-session only, and later runs may replace what is currently displayed in the output tabs."
+    )
+
     output_tabs = st.tabs(
         [
             "Converted text",
@@ -1066,6 +1105,15 @@ with right_col:
                 st.session_state["feedback_report"],
                 timestamped_filename(base_name, "TTS_Feedback"),
             )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.subheader("Optional feedback")
+    st.caption("If this demo helps or something goes wrong, feedback is welcome.")
+    show_optional_link_button(
+        "Open feedback form",
+        FEEDBACK_FORM_URL,
+        help_text="Add your Google Form link here later to collect optional user feedback.",
+    )
 
 st.divider()
 st.caption(

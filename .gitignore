@@ -2,3 +2,10 @@
 __pycache__/
 *.pyc
 .streamlit/
+.venv/
+usage_log.txt
+usage_limits.json
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+.DS_Store
