@@ -18,7 +18,7 @@ from engines.marker_engine import MarkerJob, run_marker_job
 
 
 APP_NAME = "Tidy Text Suite"
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.6.0"
 APP_TAGLINE = "AI-powered OCR, marking, copy checking, and feedback"
 
 # Change these if your desktop build uses different working model names
@@ -145,17 +145,12 @@ def extract_copy_band(ai_text: str, fallback: str = "LOW") -> str:
     return match.group(1).upper() if match else fallback
 
 
-def resolve_exam_text(exam_text_file, exam_text_manual: str) -> str:
-    """
-    Important change:
-    This no longer falls back to OCR output.
-    Users must explicitly paste/upload the exam text they want processed.
-    """
+def resolve_exam_text(exam_text_file, exam_text_manual: str, converted_text: str) -> str:
     if exam_text_file is not None:
         return exam_text_file.getvalue().decode("utf-8", errors="replace")
     if exam_text_manual.strip():
         return exam_text_manual.strip()
-    return ""
+    return converted_text
 
 
 def resolve_notes_text(notes_file, notes_text_manual: str) -> str:
@@ -503,9 +498,9 @@ with st.sidebar:
     st.subheader("Workflow")
     st.markdown(
         "**Printed / scanned text**\n"
-        "Upload PDF → Convert with traditional OCR → Review in output panel → Copy/paste the text you want into Exam text → Process\n\n"
+        "Upload PDF → Convert with traditional OCR → Review → Download or continue to compare/mark\n\n"
         "**Handwritten student work**\n"
-        "Upload PDF → Convert with AI OCR → Review in output panel → Copy/paste the text you want into Exam text → Process"
+        "Upload PDF → Convert with AI OCR → Review → Continue to compare, mark, or feedback"
     )
 
     st.subheader("OpenAI settings")
@@ -589,7 +584,8 @@ st.warning(
 )
 
 st.info(
-    "Recommended workflow: Convert the PDF first, review the OCR text in the output panel, then paste the final text you want assessed into the Exam text field."
+    "Recommended workflow: Printed or scanned text should use traditional OCR (Tesseract). "
+    "Handwritten student responses should use AI OCR."
 )
 
 with st.expander("Important use conditions, privacy notice, and disclaimers", expanded=False):
@@ -676,6 +672,7 @@ with left_col:
 
                 st.session_state["converted_text"] = result.typed_text
                 st.session_state["conversion_report"] = result.report_text
+                st.session_state["exam_text_override"] = result.typed_text
                 st.session_state["current_base_name"] = sanitize_stem(pdf_file.name)
 
                 # Clear downstream outputs after reconversion
@@ -683,17 +680,17 @@ with left_col:
                 st.session_state["assessment_report"] = ""
                 st.session_state["feedback_report"] = ""
 
-            st.success("Conversion complete. Review the OCR in the output panel, then paste the final text you want assessed into the Exam text field below.")
+            st.success("Conversion complete.")
             st.rerun()
 
     # -------------------------
     # Step 2: Add / override text inputs
     # -------------------------
     st.markdown("<br>", unsafe_allow_html=True)
-    st.subheader("Step 2: Add text for processing")
+    st.subheader("Step 2: Add or override text inputs")
     st.caption(
-        "OCR output does not auto-fill the Exam text field. "
-        "Paste or upload only the exact exam text you want used for comparison, marking, and feedback."
+        "You can paste or upload text instead of using OCR output. "
+        "If exam text is provided here, it will override the converted PDF text."
     )
 
     exam_text_file = st.file_uploader(
@@ -707,11 +704,8 @@ with left_col:
         "Exam text",
         key="exam_text_override",
         height=180,
-        placeholder="Paste the final exam response text here for processing.",
+        placeholder="Paste the student's response here if not using the converted PDF text.",
     )
-
-    if st.session_state["converted_text"].strip() and not st.session_state["exam_text_override"].strip() and exam_text_file is None:
-        st.info("Converted OCR text is available in the Outputs → Converted text tab. Copy the text you want from there, then paste it into the Exam text field here.")
 
     notes_file = st.file_uploader(
         "Study notes text (TXT/MD)",
@@ -744,6 +738,7 @@ with left_col:
     exam_text = resolve_exam_text(
         exam_text_file=exam_text_file,
         exam_text_manual=st.session_state["exam_text_override"],
+        converted_text=st.session_state["converted_text"],
     )
     notes_text = resolve_notes_text(
         notes_file=notes_file,
@@ -759,7 +754,7 @@ with left_col:
     # -------------------------
     st.markdown("<br>", unsafe_allow_html=True)
     st.subheader("Step 3: Process")
-    st.caption("Use the Exam text field above for notes comparison, assessment reporting, and feedback.")
+    st.caption("Use the current exam text above for comparison, marking, and feedback.")
 
     col_a, col_b, col_c = st.columns(3)
 
@@ -770,7 +765,7 @@ with left_col:
             if not privacy_confirmed:
                 st.error("Please confirm the privacy checkbox before processing any PDF content.")
             elif not exam_text.strip():
-                st.error("Provide exam text first by pasting or uploading the exam text in Step 2.")
+                st.error("Provide exam text first by converting a PDF or pasting exam text.")
             elif not notes_text.strip():
                 st.error("Please upload or paste study notes text.")
             else:
@@ -791,7 +786,7 @@ with left_col:
             if not privacy_confirmed:
                 st.error("Please confirm the privacy checkbox before processing any PDF content.")
             elif not exam_text.strip():
-                st.error("Provide exam text first by pasting or uploading the exam text in Step 2.")
+                st.error("Provide exam text first by converting a PDF or pasting exam text.")
             elif not criteria_text.strip():
                 st.error("Please upload or paste criteria / rubric text.")
             else:
@@ -815,7 +810,7 @@ with left_col:
             if not privacy_confirmed:
                 st.error("Please confirm the privacy checkbox before processing any PDF content.")
             elif not exam_text.strip():
-                st.error("Provide exam text first by pasting or uploading the exam text in Step 2.")
+                st.error("Provide exam text first by converting a PDF or pasting exam text.")
             elif not criteria_text.strip():
                 st.error("Please upload or paste criteria / rubric text.")
             else:
@@ -845,11 +840,10 @@ with right_col:
     ):
         st.info(
             "Workflow:\n"
-            "1. Upload and convert a PDF.\n"
-            "2. Review the OCR in the output panel.\n"
-            "3. Paste the final exam text you want processed into the Exam text field.\n"
-            "4. Add study notes and/or criteria.\n"
-            "5. Generate the output you need and download it using the buttons below each output."
+            "1. Upload and convert a PDF, or paste exam text in Step 2.\n"
+            "2. Add study notes and/or criteria.\n"
+            "3. Generate the output you need.\n"
+            "4. Download the report using the buttons below each output."
         )
 
     output_tabs = st.tabs(
