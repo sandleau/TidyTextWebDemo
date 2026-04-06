@@ -869,7 +869,7 @@ with right_col:
             "Converted text output",
             value=st.session_state["converted_text"],
             height=320,
-            key="converted_text_output_area",
+            
         )
         if st.session_state["converted_text"].strip():
             download_text_button(
@@ -883,7 +883,7 @@ with right_col:
             "Processing / conversion report",
             value=st.session_state["conversion_report"],
             height=320,
-            key="conversion_report_output_area",
+            
         )
         if st.session_state["conversion_report"].strip():
             download_text_button(
@@ -897,7 +897,7 @@ with right_col:
             "Notes comparison report",
             value=st.session_state["compare_report"],
             height=320,
-            key="compare_report_output_area",
+            
         )
         if st.session_state["compare_report"].strip():
             download_text_button(
@@ -911,7 +911,7 @@ with right_col:
             "Assessment report",
             value=st.session_state["assessment_report"],
             height=360,
-            key="assessment_report_output_area",
+            
         )
         if st.session_state["assessment_report"].strip():
             download_text_button(
@@ -925,7 +925,7 @@ with right_col:
             "Feedback report",
             value=st.session_state["feedback_report"],
             height=320,
-            key="feedback_report_output_area",
+            
         )
         if st.session_state["feedback_report"].strip():
             download_text_button(
