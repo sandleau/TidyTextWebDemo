@@ -3,7 +3,6 @@ from __future__ import annotations
 import tempfile
 from dataclasses import dataclass
 from typing import Optional
-from unittest import result
 
 import streamlit as st
 from engines.converter_engine import ConverterJob, run_converter_job
@@ -84,21 +83,25 @@ def run_conversion(pdf_bytes: bytes, original_name: str, conversion_mode: str) -
     ]
 
     if conversion_mode == "Scanned or printed text":
-        preface_lines.extend([
-        "Note:",
-        "This option is intended for scanned documents that mainly contain printed text.",
-        "If the output quality is poor, try the ChatGPT/OpenAI vision workflow later instead.",
-        "",
-    ])
+        preface_lines.extend(
+            [
+                "Note:",
+                "This option is intended for scanned documents that mainly contain printed text.",
+                "If the output quality is poor, try the ChatGPT/OpenAI vision workflow later instead.",
+                "",
+            ]
+        )
     else:
-        preface_lines.extend([
-        "Note:",
-        "This demo is using Local Tesseract for first-pass conversion.",
-        "If handwriting accuracy is poor, use the ChatGPT/OpenAI vision workflow for better results.",
-        "",
-    ])
+        preface_lines.extend(
+            [
+                "Note:",
+                "This demo is using Local Tesseract for first-pass conversion.",
+                "If handwriting accuracy is poor, use the ChatGPT/OpenAI vision workflow for better results.",
+                "",
+            ]
+        )
 
-    report_text = "\n".join(preface_lines) + result.full_text
+    report_text = "".join(preface_lines) + result.full_text
 
     return ConversionResult(
         typed_text=result.full_text,
@@ -109,32 +112,32 @@ def run_conversion(pdf_bytes: bytes, original_name: str, conversion_mode: str) -
 
 def run_notes_compare(student_text: str, notes_text: str) -> CompareResult:
     result = (
-        "=== NOTES COMPARISON REPORT ===\n\n"
-        "[DEMO PLACEHOLDER]\n\n"
-        f"Student text length: {len(student_text)} characters\n"
-        f"Notes text length: {len(notes_text)} characters\n"
+        "=== NOTES COMPARISON REPORT ==="
+        "[DEMO PLACEHOLDER]"
+        f"Student text length: {len(student_text)} characters"
+        f"Notes text length: {len(notes_text)} characters"
     )
     return CompareResult(report_text=result)
 
 
 def run_marking(student_text: str, criteria_text: str, year_level: str) -> MarkResult:
     result = (
-        "=== MARKING REPORT ===\n\n"
-        "[DEMO PLACEHOLDER]\n\n"
-        f"Year level: {year_level}\n"
-        f"Student text length: {len(student_text)} characters\n"
-        f"Criteria text length: {len(criteria_text)} characters\n"
+        "=== MARKING REPORT ==="
+        "[DEMO PLACEHOLDER]"
+        f"Year level: {year_level}"
+        f"Student text length: {len(student_text)} characters"
+        f"Criteria text length: {len(criteria_text)} characters"
     )
     return MarkResult(report_text=result)
 
 
 def run_feedback(student_text: str, criteria_text: str, year_level: str) -> FeedbackResult:
     result = (
-        "=== FEEDBACK REPORT ===\n\n"
-        "[DEMO PLACEHOLDER]\n\n"
-        f"Year level: {year_level}\n"
-        f"Student text length: {len(student_text)} characters\n"
-        f"Criteria text length: {len(criteria_text)} characters\n"
+        "=== FEEDBACK REPORT ==="
+        "[DEMO PLACEHOLDER]"
+        f"Year level: {year_level}"
+        f"Student text length: {len(student_text)} characters"
+        f"Criteria text length: {len(criteria_text)} characters"
     )
     return FeedbackResult(report_text=result)
 
@@ -196,7 +199,7 @@ def log_usage(action: str):
     except Exception:
         ip = "unknown"
 
-    log_line = f"{datetime.datetime.now().isoformat()} | {ip} | {action}\n"
+    log_line = f"{datetime.datetime.now().isoformat()} | {ip} | {action}"
 
     with open("usage_log.txt", "a") as f:
         f.write(log_line)
@@ -210,10 +213,6 @@ st.caption(f"v{APP_VERSION} • {APP_TAGLINE}")
 
 st.warning(
     "Privacy warning: Do not upload PDFs that contain private or identifying student information. Best practice is to remove, redact, or exclude names, student numbers, addresses, date of birth, school IDs, or any other identifying details before upload."
-)
-
-st.info(
-    "Recommended workflow: Printed or scanned text should use traditional OCR (Tesseract). Handwritten student responses are better suited to AI OCR. In this demo, the printed/scanned path is ready now. The AI handwriting path should be enabled next so the wording matches the final workflow."
 )
 
 with st.expander("Important use conditions, privacy notice, and disclaimers", expanded=False):
@@ -238,13 +237,11 @@ privacy_confirmed = st.checkbox(
 )
 
 # Copyright notice
-st.caption(
-    "© Sandle Software — Tidy Text Suite. All rights reserved. "
-    "This software, including all underlying logic, workflows, and outputs, "
-    "is the intellectual property of Sandle Software and may not be copied, "
-    "reproduced, reverse engineered, or redistributed without permission."
+st.caption("© Sandle Software — Tidy Text Suite. All rights reserved. This software, including all underlying logic, workflows, and outputs, is the intellectual property of Sandle Software and may not be copied, reproduced, reverse engineered, or redistributed without permission.")
+privacy_confirmed = st.checkbox(
+    "I confirm that any uploaded PDF has been checked and does not contain private or identifying student information, or that such information has been removed or redacted.",
+    value=False,
 )
-
 
 
 # -----------------------------
@@ -253,15 +250,15 @@ st.caption(
 with st.sidebar:
     st.subheader("Workflow")
     st.markdown(
-        "**Printed / scanned text**\n"
-        "Upload PDF → Convert with traditional OCR → Review → Download text or continue to compare/mark\n\n"
-        "**Handwritten student work**\n"
-        "Upload PDF → Use AI OCR workflow → Review → Continue to compare, mark, or feedback"
+        "1. Upload handwritten or scanned PDF"
+        "2. Convert to typed text"
+        "3. Optionally compare with notes"
+        "4. Optionally mark and generate feedback"
+        "5. Download reports as text"
     )
 
-    st.subheader("Year level")
     year_level = st.selectbox(
-        "Select year level",
+        "Year level",
         [
             "Default",
             "Kindergarten",
@@ -279,7 +276,6 @@ with st.sidebar:
             "Year 12",
         ],
         index=0,
-        label_visibility="collapsed",
     )
 
     st.subheader("Security notes")
@@ -295,7 +291,6 @@ left_col, right_col = st.columns([1, 1], gap="large")
 
 with left_col:
     st.subheader("1. Upload source PDF")
-    st.caption("Choose the conversion path that matches the document type before processing.")
     handwritten_pdf = st.file_uploader(
         "Student handwritten or scanned PDF",
         type=["pdf"],
@@ -304,22 +299,21 @@ with left_col:
     )
 
     conversion_mode = st.radio(
-        "Conversion path",
-        ["Scanned or printed text — traditional OCR", "Handwritten student response — AI OCR recommended"],
+        "Conversion type",
+        ["Handwritten student response", "Scanned or printed text"],
         index=0,
-        help="Choose the path that best matches the document you are uploading.",
+        help="Choose the option that best matches the document you are uploading.",
     )
 
-    if conversion_mode == "Scanned or printed text — traditional OCR":
-        st.success(
-            "This path uses traditional OCR with Local Tesseract. It is the correct first choice for printed worksheets, typed pages, and most clean scans."
+    if conversion_mode == "Scanned or printed text":
+        st.info(
+            "This mode is intended for scanned documents that mainly contain printed text and uses Local Tesseract first. If the result is poor, try the ChatGPT/OpenAI AI model workflow instead."
         )
     else:
-        st.warning(
-            "Handwritten work is better suited to AI OCR. This demo should present that as the preferred workflow. If the current local OCR result is weak, the next upgrade is to route this path through the ChatGPT/OpenAI model instead."
+        st.info(
+            "This demo currently uses Local Tesseract first. For difficult handwriting, the ChatGPT/OpenAI AI model workflow will usually give better results once that path is enabled."
         )
 
-    st.markdown("<br>", unsafe_allow_html=True)
     st.subheader("2. Optional inputs")
     notes_file = st.file_uploader(
         "Study notes or source text (TXT/MD)",
@@ -343,10 +337,8 @@ with left_col:
         placeholder="Paste criteria or rubric here if not uploading a text file.",
     )
 
-    st.markdown("<br>", unsafe_allow_html=True)
     st.subheader("3. Actions")
     convert_only = st.button("Convert PDF to text", use_container_width=True, type="primary")
-    st.caption("For printed text, this uses traditional OCR now. For handwriting, AI OCR is the intended best path.")
     compare_notes = st.button("Compare with notes", use_container_width=True)
     mark_work = st.button("Mark response", use_container_width=True)
     make_feedback = st.button("Generate feedback", use_container_width=True)
@@ -372,12 +364,7 @@ with left_col:
         else:
             with st.spinner("Converting PDF to typed text..."):
                 pdf_bytes = save_upload_to_bytes(handwritten_pdf)
-                mode_for_backend = (
-                    "Scanned or printed text"
-                    if conversion_mode.startswith("Scanned or printed text")
-                    else "Handwritten student response"
-                )
-                result = run_conversion(pdf_bytes, handwritten_pdf.name, mode_for_backend)
+                result = run_conversion(pdf_bytes, handwritten_pdf.name, conversion_mode)
                 st.session_state.converted_text = result.typed_text
                 st.session_state.printable_text = result.printable_text
                 st.session_state.conversion_report = result.report_text
