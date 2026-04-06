@@ -1,30 +1,18 @@
 from __future__ import annotations
 
-import io
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 import streamlit as st
+from engines.converter_engine import ConverterJob, run_converter_job
 
 # ============================================================
 # Tidy Text Suite — Secure Streamlit Demo Shell
-# ------------------------------------------------------------
-# Purpose:
-# A minimal web demo for showcasing functionality without
-# exposing core marking/OCR logic in the browser.
-#
-# Notes:
-# - Keep all OCR/AI/marking logic on the server side.
-# - Store API keys in Streamlit secrets or environment variables.
-# - Do not place prompts, keys, or proprietary logic in frontend JS.
-# - Replace the placeholder engine functions below with your
-#   existing Tidy Text engine wrappers.
 # ============================================================
 
 APP_NAME = "Tidy Text Suite"
-APP_VERSION = "0.1.0-demo"
+APP_VERSION = "0.2.0-demo"
 APP_TAGLINE = "Handwriting conversion, notes comparison, marking, and feedback"
 
 
@@ -55,66 +43,101 @@ class FeedbackResult:
 
 # -----------------------------
 # Engine integration points
-# Replace these with wrappers around your existing engine files.
 # -----------------------------
-def run_conversion(pdf_bytes: bytes, original_name: str) -> ConversionResult:
+def run_conversion(pdf_bytes: bytes, original_name: str, conversion_mode: str) -> ConversionResult:
     """
-    Replace with your real conversion pipeline.
-    Expected job:
-    - Save uploaded PDF temporarily
-    - Call OCR / AI transcription engine
-    - Return typed text + printable text + report text
+    Runs the real converter engine using local Tesseract first.
+
+    conversion_mode values:
+    - "Handwritten student response"
+    - "Scanned or printed text"
     """
-    placeholder = (
-        f"[DEMO PLACEHOLDER]\n\n"
-        f"Original file: {original_name}\n"
-        f"Bytes received: {len(pdf_bytes)}\n\n"
-        f"This is where the OCR/transcription engine output will appear."
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(pdf_bytes)
+        tmp_path = tmp.name
+
+    output_folder = tempfile.gettempdir()
+
+    job = ConverterJob(
+        pdf_path=tmp_path,
+        output_folder=output_folder,
+        output_name="streamlit_output",
+        doc_type="Exam",
+        engine="Local Tesseract",
+        model_name="",
+        out_ext=".txt",
+        api_key=None,
     )
+
+    result = run_converter_job(job)
+    if not result.success:
+        raise RuntimeError(result.error)
+
+    preface_lines = [
+        "=== TIDY TEXT CONVERSION REPORT ===",
+        "",
+        f"Original file: {original_name}",
+        f"Conversion mode: {conversion_mode}",
+        "Engine used: Local Tesseract",
+        "",
+    ]
+
+    if conversion_mode == "Scanned or printed text":
+        preface_lines.extend(
+            [
+                "Note:",
+                "This option is intended for scanned documents that mainly contain printed text.",
+                "If the output quality is poor, try the ChatGPT/OpenAI vision workflow later instead.",
+                "",
+            ]
+        )
+    else:
+        preface_lines.extend(
+            [
+                "Note:",
+                "This demo is using Local Tesseract for first-pass conversion.",
+                "If handwriting accuracy is poor, use the ChatGPT/OpenAI vision workflow for better results.",
+                "",
+            ]
+        )
+
+    report_text = "".join(preface_lines) + result.full_text
+
     return ConversionResult(
-        typed_text=placeholder,
-        printable_text=placeholder,
-        report_text="=== TIDY TEXT CONVERSION REPORT ===\n\n" + placeholder,
+        typed_text=result.full_text,
+        printable_text=result.full_text,
+        report_text=report_text,
     )
 
 
 def run_notes_compare(student_text: str, notes_text: str) -> CompareResult:
-    """
-    Replace with your real notes comparison / copy detection pipeline.
-    """
     result = (
-        "=== NOTES COMPARISON REPORT ===\n\n"
-        "[DEMO PLACEHOLDER]\n\n"
-        f"Student text length: {len(student_text)} characters\n"
-        f"Notes text length: {len(notes_text)} characters\n"
+        "=== NOTES COMPARISON REPORT ==="
+        "[DEMO PLACEHOLDER]"
+        f"Student text length: {len(student_text)} characters"
+        f"Notes text length: {len(notes_text)} characters"
     )
     return CompareResult(report_text=result)
 
 
 def run_marking(student_text: str, criteria_text: str, year_level: str) -> MarkResult:
-    """
-    Replace with your real rubric-based marking pipeline.
-    """
     result = (
-        "=== MARKING REPORT ===\n\n"
-        "[DEMO PLACEHOLDER]\n\n"
-        f"Year level: {year_level}\n"
-        f"Student text length: {len(student_text)} characters\n"
-        f"Criteria text length: {len(criteria_text)} characters\n"
+        "=== MARKING REPORT ==="
+        "[DEMO PLACEHOLDER]"
+        f"Year level: {year_level}"
+        f"Student text length: {len(student_text)} characters"
+        f"Criteria text length: {len(criteria_text)} characters"
     )
     return MarkResult(report_text=result)
 
 
 def run_feedback(student_text: str, criteria_text: str, year_level: str) -> FeedbackResult:
-    """
-    Replace with your real feedback-generation pipeline.
-    """
     result = (
-        "=== FEEDBACK REPORT ===\n\n"
-        "[DEMO PLACEHOLDER]\n\n"
-        f"Year level: {year_level}\n"
-        f"Student text length: {len(student_text)} characters\n"
-        f"Criteria text length: {len(criteria_text)} characters\n"
+        "=== FEEDBACK REPORT ==="
+        "[DEMO PLACEHOLDER]"
+        f"Year level: {year_level}"
+        f"Student text length: {len(student_text)} characters"
+        f"Criteria text length: {len(criteria_text)} characters"
     )
     return FeedbackResult(report_text=result)
 
@@ -164,13 +187,60 @@ if "feedback_report" not in st.session_state:
 
 
 # -----------------------------
+# Usage logging (basic, non-content)
+# -----------------------------
+import datetime
+
+def log_usage(action: str):
+    """Basic usage logger (no content stored)."""
+    try:
+        import requests
+        ip = requests.get("https://api.ipify.org").text
+    except Exception:
+        ip = "unknown"
+
+    log_line = f"{datetime.datetime.now().isoformat()} | {ip} | {action}"
+
+    with open("usage_log.txt", "a") as f:
+        f.write(log_line)
+
+
+# -----------------------------
 # Header
 # -----------------------------
 st.title(f"{APP_NAME} — Web Demo")
 st.caption(f"v{APP_VERSION} • {APP_TAGLINE}")
 
-st.info(
-    "This demo keeps processing on the server side. Uploaded files and generated outputs are used only for the current session unless you choose to add persistent storage later."
+st.warning(
+    "Privacy warning: Do not upload PDFs that contain private or identifying student information. Best practice is to remove, redact, or exclude names, student numbers, addresses, date of birth, school IDs, or any other identifying details before upload."
+)
+
+with st.expander("Important use conditions, privacy notice, and disclaimers", expanded=False):
+    st.markdown(
+        """
+**Important privacy and use notice**
+
+- This demo is provided for evaluation and workflow testing only.
+- Do not use this app with PDFs that contain personal information that could identify a student or other individual.
+- Before upload, remove, redact, or exclude names, student numbers, addresses, dates of birth, school identifiers, signatures, email addresses, phone numbers, and any other identifying details.
+- The user is responsible for checking that all uploaded content is appropriate, lawful, and de-identified before use.
+- Outputs may contain transcription errors, OCR errors, formatting issues, incorrect marking, incorrect feedback, or incomplete text. All results must be checked by a teacher or other responsible human reviewer before being relied on.
+- This tool is an assistive workflow tool only. It does not replace professional judgement, school procedures, moderation, reporting requirements, privacy obligations, or records management obligations.
+- No warranty is given that the app will be uninterrupted, error-free, accurate, fit for a particular purpose, or suitable for any compliance obligation.
+- By using this demo, the user accepts responsibility for reviewing outputs and for ensuring their own compliance with applicable school, employer, legal, and privacy requirements.
+        """
+    )
+
+privacy_confirmed = st.checkbox(
+    "I confirm that any uploaded PDF has been checked and does not contain private or identifying student information, and does not include unlawful, offensive, or inappropriate material (including hate speech, abuse, or illegal content).",
+    value=False,
+)
+
+# Copyright notice
+st.caption("© Sandle Software — Tidy Text Suite. All rights reserved. This software, including all underlying logic, workflows, and outputs, is the intellectual property of Sandle Software and may not be copied, reproduced, reverse engineered, or redistributed without permission.")
+privacy_confirmed = st.checkbox(
+    "I confirm that any uploaded PDF has been checked and does not contain private or identifying student information, or that such information has been removed or redacted.",
+    value=False,
 )
 
 
@@ -180,10 +250,10 @@ st.info(
 with st.sidebar:
     st.subheader("Workflow")
     st.markdown(
-        "1. Upload handwritten PDF\n"
-        "2. Convert to typed text\n"
-        "3. Optionally compare with notes\n"
-        "4. Optionally mark and generate feedback\n"
+        "1. Upload handwritten or scanned PDF"
+        "2. Convert to typed text"
+        "3. Optionally compare with notes"
+        "4. Optionally mark and generate feedback"
         "5. Download reports as text"
     )
 
@@ -220,13 +290,29 @@ with st.sidebar:
 left_col, right_col = st.columns([1, 1], gap="large")
 
 with left_col:
-    st.subheader("1. Upload handwritten PDF")
+    st.subheader("1. Upload source PDF")
     handwritten_pdf = st.file_uploader(
-        "Student handwritten PDF",
+        "Student handwritten or scanned PDF",
         type=["pdf"],
         accept_multiple_files=False,
-        help="Upload a scanned or handwritten student response PDF.",
+        help="Upload a scanned handwritten response or a scanned document with printed text.",
     )
+
+    conversion_mode = st.radio(
+        "Conversion type",
+        ["Handwritten student response", "Scanned or printed text"],
+        index=0,
+        help="Choose the option that best matches the document you are uploading.",
+    )
+
+    if conversion_mode == "Scanned or printed text":
+        st.info(
+            "This mode is intended for scanned documents that mainly contain printed text and uses Local Tesseract first. If the result is poor, try the ChatGPT/OpenAI AI model workflow instead."
+        )
+    else:
+        st.info(
+            "This demo currently uses Local Tesseract first. For difficult handwriting, the ChatGPT/OpenAI AI model workflow will usually give better results once that path is enabled."
+        )
 
     st.subheader("2. Optional inputs")
     notes_file = st.file_uploader(
@@ -270,19 +356,25 @@ with left_col:
         criteria_text = criteria_text_manual.strip()
 
     if convert_only:
-        if handwritten_pdf is None:
-            st.error("Please upload a handwritten PDF first.")
+        log_usage("convert")
+        if not privacy_confirmed:
+            st.error("Please confirm the privacy checkbox before uploading or processing any PDF.")
+        elif handwritten_pdf is None:
+            st.error("Please upload a PDF first.")
         else:
-            with st.spinner("Converting handwritten PDF to typed text..."):
+            with st.spinner("Converting PDF to typed text..."):
                 pdf_bytes = save_upload_to_bytes(handwritten_pdf)
-                result = run_conversion(pdf_bytes, handwritten_pdf.name)
+                result = run_conversion(pdf_bytes, handwritten_pdf.name, conversion_mode)
                 st.session_state.converted_text = result.typed_text
                 st.session_state.printable_text = result.printable_text
                 st.session_state.conversion_report = result.report_text
             st.success("Conversion complete.")
 
     if compare_notes:
-        if not st.session_state.converted_text:
+        log_usage("compare")
+        if not privacy_confirmed:
+            st.error("Please confirm the privacy checkbox before processing any PDF content.")
+        elif not st.session_state.converted_text:
             st.error("Convert the PDF first so there is student text to compare.")
         elif not notes_text:
             st.error("Please upload or paste study notes text.")
@@ -293,7 +385,10 @@ with left_col:
             st.success("Notes comparison complete.")
 
     if mark_work:
-        if not st.session_state.converted_text:
+        log_usage("mark")
+        if not privacy_confirmed:
+            st.error("Please confirm the privacy checkbox before processing any PDF content.")
+        elif not st.session_state.converted_text:
             st.error("Convert the PDF first so there is student text to mark.")
         elif not criteria_text:
             st.error("Please upload or paste criteria / rubric text.")
@@ -304,7 +399,10 @@ with left_col:
             st.success("Marking complete.")
 
     if make_feedback:
-        if not st.session_state.converted_text:
+        log_usage("feedback")
+        if not privacy_confirmed:
+            st.error("Please confirm the privacy checkbox before processing any PDF content.")
+        elif not st.session_state.converted_text:
             st.error("Convert the PDF first so there is student text for feedback.")
         elif not criteria_text:
             st.error("Please upload or paste criteria / rubric text.")
@@ -415,5 +513,5 @@ with right_col:
 
 st.divider()
 st.caption(
-    "Demo shell for Tidy Text Suite. Keep the proprietary OCR, marking, and comparison logic in server-side engine wrappers."
+    "Demo shell for Tidy Text Suite. Keep the proprietary OCR, marking, and comparison logic in server-side engine wrappers. Results must always be checked by a human reviewer."
 )
