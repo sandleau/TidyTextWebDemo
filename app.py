@@ -1,20 +1,29 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
+import requests
 import streamlit as st
 from openai import OpenAI
 
 import tidy_text_v2 as backend
 from engines.converter_engine import ConverterJob, run_converter_job
+from engines.marker_engine import MarkerJob, run_marker_job
 
 
 APP_NAME = "Tidy Text Suite"
-APP_VERSION = "0.5.0"
-APP_TAGLINE = "AI-powered OCR, marking, and feedback"
+APP_VERSION = "0.6.0"
+APP_TAGLINE = "AI-powered OCR, marking, copy checking, and feedback"
+
+# Change these if your desktop build uses different working model names
+DEFAULT_VISION_MODEL = "gpt-5.4-mini"
+DEFAULT_TEXT_MODEL = "gpt-5.4-mini"
 
 
 # -----------------------------
@@ -28,127 +37,537 @@ class ConversionResult:
 
 
 @dataclass
-class Result:
+class TextResult:
     report_text: str
 
 
 # -----------------------------
-# API Key
+# Session defaults
 # -----------------------------
-def get_api_key():
-    if st.session_state.get("session_api_key"):
-        return st.session_state["session_api_key"], "session"
+SESSION_DEFAULTS = {
+    "converted_text": "",
+    "conversion_report": "",
+    "compare_report": "",
+    "assessment_report": "",
+    "feedback_report": "",
+    "exam_text_override": "",
+    "notes_text_input": "",
+    "criteria_text_input": "",
+    "session_api_key": "",
+    "api_key_source_label": "not set",
+    "current_base_name": "TTS_Output",
+}
+
+for key, value in SESSION_DEFAULTS.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def sanitize_stem(name: str) -> str:
+    stem = Path(name).stem if name else "TTS_Output"
+    stem = re.sub(r"[^\w\-]+", "_", stem).strip("_")
+    return stem or "TTS_Output"
+
+
+def timestamped_filename(base_name: str, suffix: str, ext: str = ".txt") -> str:
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    safe_base = sanitize_stem(base_name)
+    return f"{safe_base}_{suffix}_{stamp}{ext}"
+
+
+def save_upload_to_bytes(uploaded_file) -> bytes:
+    return uploaded_file.getvalue() if uploaded_file is not None else b""
+
+
+def save_text_to_tempfile(text: str, suffix: str = ".txt") -> str:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="w", encoding="utf-8") as tmp:
+        tmp.write(text)
+        return tmp.name
+
+
+def download_text_button(label: str, text: str, filename: str) -> None:
+    st.download_button(
+        label=label,
+        data=text.encode("utf-8"),
+        file_name=filename,
+        mime="text/plain",
+        use_container_width=True,
+    )
+
+
+def get_api_key() -> tuple[Optional[str], str]:
+    """
+    Priority:
+    1. Session override entered by user
+    2. Streamlit secrets
+    3. Environment variable
+    """
+    session_key = st.session_state.get("session_api_key", "").strip()
+    if session_key:
+        return session_key, "session key"
+
     try:
-        return st.secrets["OPENAI_API_KEY"], "secrets"
+        secret_key = st.secrets.get("OPENAI_API_KEY", "").strip()
+        if secret_key:
+            return secret_key, "streamlit secrets"
     except Exception:
-        return None, "missing"
+        pass
+
+    env_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if env_key:
+        return env_key, "environment variable"
+
+    return None, "not set"
+
+
+def log_usage(action: str, engine_used: str = "") -> None:
+    """
+    Basic usage logger without storing document content.
+    """
+    try:
+        ip = requests.get("https://api.ipify.org", timeout=5).text
+    except Exception:
+        ip = "unknown"
+
+    timestamp = datetime.now().isoformat()
+    key_source = st.session_state.get("api_key_source_label", "unknown")
+    line = f"{timestamp} | {ip} | {action} | {engine_used} | key_source={key_source}\n"
+
+    with open("usage_log.txt", "a", encoding="utf-8") as f:
+        f.write(line)
+
+
+def extract_copy_band(ai_text: str, fallback: str = "LOW") -> str:
+    match = re.search(r"Similarity:\s*(LOW|MEDIUM|MEDIUM-HIGH|HIGH)", ai_text, re.I)
+    return match.group(1).upper() if match else fallback
+
+
+def resolve_exam_text(exam_text_file, exam_text_manual: str, converted_text: str) -> str:
+    if exam_text_file is not None:
+        return exam_text_file.getvalue().decode("utf-8", errors="replace")
+    if exam_text_manual.strip():
+        return exam_text_manual.strip()
+    return converted_text
+
+
+def resolve_notes_text(notes_file, notes_text_manual: str) -> str:
+    if notes_file is not None:
+        return notes_file.getvalue().decode("utf-8", errors="replace")
+    if notes_text_manual.strip():
+        return notes_text_manual.strip()
+    return ""
+
+
+def resolve_criteria_text(criteria_file, criteria_text_manual: str) -> str:
+    if criteria_file is not None:
+        return criteria_file.getvalue().decode("utf-8", errors="replace")
+    if criteria_text_manual.strip():
+        return criteria_text_manual.strip()
+    return ""
 
 
 # -----------------------------
-# Conversion
+# Core functions
 # -----------------------------
-def run_conversion(pdf_bytes, filename, mode, api_key):
-
+def run_conversion(
+    pdf_bytes: bytes,
+    original_name: str,
+    conversion_mode: str,
+    api_key: Optional[str],
+    vision_model: str,
+) -> ConversionResult:
+    """
+    Printed/scanned text -> Local Tesseract
+    Handwritten response  -> OpenAI Vision
+    """
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(pdf_bytes)
-        path = tmp.name
+        pdf_path = tmp.name
 
-    if mode == "Handwritten":
-        engine = "OpenAI Vision"
+    if conversion_mode == "Handwritten student response":
+        engine_name = "OpenAI Vision"
+        model_name = vision_model
         if not api_key:
-            raise RuntimeError("API key required for handwriting OCR")
+            raise RuntimeError(
+                "No OpenAI API key is available for handwriting OCR. "
+                "Add one in the sidebar for this session, or configure OPENAI_API_KEY."
+            )
     else:
-        engine = "Local Tesseract"
+        engine_name = "Local Tesseract"
+        model_name = ""
         api_key = None
 
     job = ConverterJob(
-        pdf_path=path,
+        pdf_path=pdf_path,
         output_folder=tempfile.gettempdir(),
-        output_name="output",
+        output_name="streamlit_output",
         doc_type="Exam",
-        engine=engine,
-        model_name="gpt-5.4-mini",
+        engine=engine_name,
+        model_name=model_name,
         out_ext=".txt",
         api_key=api_key,
     )
 
     result = run_converter_job(job)
+    if not result.success:
+        raise RuntimeError(result.error)
+
+    preface_lines = [
+        "=== TIDY TEXT CONVERSION REPORT ===",
+        "",
+        f"Original file: {original_name}",
+        f"Conversion mode: {conversion_mode}",
+        f"Engine used: {engine_name}",
+    ]
+
+    if engine_name == "OpenAI Vision":
+        preface_lines.append(f"Model used: {model_name}")
+
+    preface_lines.extend(
+        [
+            "",
+            "Note:",
+            "All OCR output must be reviewed by a human before use.",
+            "",
+        ]
+    )
+
+    report_text = "\n".join(preface_lines) + result.full_text
 
     return ConversionResult(
         typed_text=result.full_text,
         printable_text=result.full_text,
-        report_text=result.full_text,
+        report_text=report_text,
     )
 
 
-# -----------------------------
-# AI Functions
-# -----------------------------
-def run_compare(text, notes, api_key):
-    backend.client = OpenAI(api_key=api_key)
-    return Result(report_text=backend.check_copying(notes, text)["ai"])
-
-
-def run_mark(text, criteria, year, api_key):
-    backend.client = OpenAI(api_key=api_key)
-    return Result(
-        report_text=backend.mark_response(
-            question="Full Response",
-            criteria=criteria,
-            answer=text,
-            max_mark=10,
-            year_level=year,
+def run_notes_compare(student_text: str, notes_text: str, api_key: Optional[str]) -> TextResult:
+    if not api_key:
+        raise RuntimeError(
+            "No OpenAI API key is available for notes comparison. "
+            "Add one in the sidebar for this session, or configure OPENAI_API_KEY."
         )
-    )
+
+    backend.client = OpenAI(api_key=api_key)
+    copy_result = backend.check_copying(notes_text, student_text)
+
+    ai_text = copy_result["ai"]
+    band = extract_copy_band(ai_text, copy_result.get("suggested_band", "LOW"))
+
+    lines = [
+        "=== NOTES COMPARISON REPORT ===",
+        "",
+        f"Copy Check Band: {band}",
+        "",
+        f"Phrase Overlap: {copy_result.get('phrase_overlap', 'N/A')}%",
+        f"Sentence Similarity: {copy_result.get('sentence_similarity', 'N/A')}%",
+        "",
+        "AI Review:",
+        ai_text,
+    ]
+
+    return TextResult(report_text="\n".join(lines))
 
 
-def run_feedback(text, criteria, year, api_key):
+def build_overall_teacher_comment(
+    student_text: str,
+    criteria_text: str,
+    assessment_report: str,
+    year_level: str,
+    api_key: Optional[str],
+    text_model: str,
+) -> str:
+    if not api_key:
+        return "No API key available for overall teacher comment."
+
     client = OpenAI(api_key=api_key)
 
+    prompt = f"""
+You are helping a teacher write a concise overall teacher comment for an assessment report.
+
+Year level: {year_level}
+
+Write a short teacher-facing summary in plain text with these headings:
+Overall strengths
+Main concerns
+Next steps
+
+Requirements:
+- Keep it concise.
+- Use professional teacher language.
+- Do not repeat the full report.
+- Do not invent marks.
+- Base the comment on the supplied report, student response, and criteria.
+
+STUDENT RESPONSE:
+{student_text}
+
+CRITERIA:
+{criteria_text}
+
+ASSESSMENT REPORT:
+{assessment_report}
+""".strip()
+
     response = client.chat.completions.create(
-        model="gpt-5.4-mini",
+        model=text_model,
         messages=[
-            {"role": "system", "content": "Write clear teacher feedback."},
-            {"role": "user", "content": f"{text}\n\nCriteria:\n{criteria}"},
+            {"role": "system", "content": "You write concise, teacher-facing assessment summaries in plain text."},
+            {"role": "user", "content": prompt},
         ],
+        temperature=0.2,
     )
 
-    return Result(report_text=response.choices[0].message.content)
+    return response.choices[0].message.content or ""
+
+
+def append_percentage_and_comment(
+    report_text: str,
+    student_text: str,
+    criteria_text: str,
+    year_level: str,
+    api_key: Optional[str],
+    text_model: str,
+) -> str:
+    awarded = None
+    possible = None
+
+    match = re.search(r"TOTAL:\s*(\d+)\s*/\s*(\d+)", report_text)
+    if match:
+        awarded = int(match.group(1))
+        possible = int(match.group(2))
+
+    extra_lines = ["", "=" * 60, ""]
+
+    if awarded is not None and possible:
+        percentage = round((awarded / possible) * 100, 1)
+        extra_lines.extend(
+            [
+                "=== OVERALL RESULT SUMMARY ===",
+                "",
+                f"Total Score: {awarded}/{possible}",
+                f"Percentage: {percentage}%",
+                "",
+            ]
+        )
+
+    teacher_comment = build_overall_teacher_comment(
+        student_text=student_text,
+        criteria_text=criteria_text,
+        assessment_report=report_text,
+        year_level=year_level,
+        api_key=api_key,
+        text_model=text_model,
+    )
+
+    extra_lines.extend(
+        [
+            "=== OVERALL TEACHER COMMENT ===",
+            "",
+            teacher_comment,
+        ]
+    )
+
+    return report_text + "\n" + "\n".join(extra_lines)
+
+
+def run_assessment_report(
+    exam_text: str,
+    criteria_text: str,
+    notes_text: str,
+    year_level: str,
+    api_key: Optional[str],
+    text_model: str,
+) -> TextResult:
+    if not api_key:
+        raise RuntimeError(
+            "No OpenAI API key is available for marking. "
+            "Add one in the sidebar for this session, or configure OPENAI_API_KEY."
+        )
+
+    exam_path = save_text_to_tempfile(exam_text)
+    criteria_path = save_text_to_tempfile(criteria_text)
+    notes_path = save_text_to_tempfile(notes_text) if notes_text.strip() else None
+
+    job = MarkerJob(
+        exam_file=exam_path,
+        criteria_file=criteria_path,
+        notes_file=notes_path,
+        year_level=year_level,
+        use_notes=bool(notes_text.strip()),
+        api_key=api_key,
+    )
+
+    result = run_marker_job(job)
+    if not result.success:
+        raise RuntimeError(result.error)
+
+    enhanced_report = append_percentage_and_comment(
+        report_text=result.report_text,
+        student_text=exam_text,
+        criteria_text=criteria_text,
+        year_level=year_level,
+        api_key=api_key,
+        text_model=text_model,
+    )
+
+    return TextResult(report_text=enhanced_report)
+
+
+def run_feedback(
+    student_text: str,
+    criteria_text: str,
+    year_level: str,
+    api_key: Optional[str],
+    text_model: str,
+) -> TextResult:
+    if not api_key:
+        raise RuntimeError(
+            "No OpenAI API key is available for feedback generation. "
+            "Add one in the sidebar for this session, or configure OPENAI_API_KEY."
+        )
+
+    client = OpenAI(api_key=api_key)
+
+    prompt = f"""
+You are helping a teacher write feedback on student work.
+
+Year level: {year_level}
+
+Write plain-text feedback with these headings:
+Strengths
+Next steps
+Suggested improvement actions
+
+Requirements:
+- Keep it concise and practical.
+- Use teacher-friendly language.
+- Do not invent marks.
+- Base the feedback only on the student response and criteria.
+
+STUDENT RESPONSE:
+{student_text}
+
+CRITERIA:
+{criteria_text}
+""".strip()
+
+    response = client.chat.completions.create(
+        model=text_model,
+        messages=[
+            {"role": "system", "content": "You write clear, concise educational feedback in plain text."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.2,
+    )
+
+    text = response.choices[0].message.content or ""
+
+    report_lines = [
+        "=== FEEDBACK REPORT ===",
+        "",
+        f"Year level: {year_level}",
+        f"Model used: {text_model}",
+        "",
+        text,
+    ]
+
+    return TextResult(report_text="\n".join(report_lines))
 
 
 # -----------------------------
-# Page setup
+# Page config
 # -----------------------------
-st.set_page_config(layout="wide")
+st.set_page_config(
+    page_title=f"{APP_NAME}",
+    page_icon="📝",
+    layout="wide",
+)
 
-# Session state
-for key in ["converted", "compare", "mark", "feedback"]:
-    if key not in st.session_state:
-        st.session_state[key] = ""
+api_key, api_key_source = get_api_key()
+st.session_state["api_key_source_label"] = api_key_source
 
 
 # -----------------------------
 # Sidebar
 # -----------------------------
 with st.sidebar:
-    st.subheader("API Settings")
-
-    st.text_input(
-        "Session API key (optional)",
-        type="password",
-        key="session_api_key",
+    st.subheader("Workflow")
+    st.markdown(
+        "**Printed / scanned text**\n"
+        "Upload PDF → Convert with traditional OCR → Review → Download or continue to compare/mark\n\n"
+        "**Handwritten student work**\n"
+        "Upload PDF → Convert with AI OCR → Review → Continue to compare, mark, or feedback"
     )
 
-    api_key, source = get_api_key()
+    st.subheader("OpenAI settings")
+    st.text_input(
+        "Session API key override",
+        type="password",
+        key="session_api_key",
+        help="Optional. Paste your own OpenAI API key for this browser session if the default key is unavailable or out of credit.",
+    )
+
+    api_key, api_key_source = get_api_key()
+    st.session_state["api_key_source_label"] = api_key_source
 
     if api_key:
-        st.success(f"Using API key from {source}")
+        st.success(f"API key available via {api_key_source}.")
     else:
-        st.warning("No API key found")
+        st.warning("No OpenAI API key detected yet.")
 
-    year = st.selectbox(
-        "Year level",
-        ["Default", "7", "8", "9", "10", "11", "12"],
+    with st.expander("How to use your own API key for this session", expanded=False):
+        st.markdown(
+            """
+1. Paste your OpenAI API key into **Session API key override** above.  
+2. It will be used only for this current Streamlit session.  
+3. Handwritten OCR, notes comparison, marking, and feedback will then use that key.  
+4. Printed/scanned OCR does not need an API key because it uses Local Tesseract.
+"""
+        )
+
+    vision_model = st.text_input(
+        "AI OCR model",
+        value=DEFAULT_VISION_MODEL,
+        help="Used for handwriting OCR.",
+    )
+
+    text_model = st.text_input(
+        "AI text model",
+        value=DEFAULT_TEXT_MODEL,
+        help="Used for notes comparison, marking, and feedback.",
+    )
+
+    st.subheader("Year level")
+    year_level = st.selectbox(
+        "Select year level",
+        [
+            "Default",
+            "Kindergarten",
+            "Year 1",
+            "Year 2",
+            "Year 3",
+            "Year 4",
+            "Year 5",
+            "Year 6",
+            "Year 7",
+            "Year 8",
+            "Year 9",
+            "Year 10",
+            "Year 11",
+            "Year 12",
+        ],
+        index=0,
+        label_visibility="collapsed",
+    )
+
+    st.subheader("Security notes")
+    st.caption(
+        "Keep long-term API keys in Streamlit secrets or environment variables. "
+        "Do not hardcode them into this file."
     )
 
 
@@ -156,93 +575,361 @@ with st.sidebar:
 # Header
 # -----------------------------
 st.title(APP_NAME)
-st.caption(APP_TAGLINE)
+st.caption(f"v{APP_VERSION} • {APP_TAGLINE}")
 
-st.warning("Do NOT upload student-identifiable information.")
+st.warning(
+    "Privacy warning: Do not upload PDFs that contain private or identifying student information. "
+    "Best practice is to remove, redact, or exclude names, student numbers, addresses, date of birth, "
+    "school IDs, or any other identifying details before upload."
+)
 
-privacy = st.checkbox("I confirm data is safe to use.")
+st.info(
+    "Recommended workflow: Printed or scanned text should use traditional OCR (Tesseract). "
+    "Handwritten student responses should use AI OCR."
+)
+
+with st.expander("Important use conditions, privacy notice, and disclaimers", expanded=False):
+    st.markdown(
+        """
+**Important privacy and use notice**
+
+- This demo is provided for evaluation and workflow testing only.
+- Do not use this app with PDFs that contain personal information that could identify a student or other individual.
+- Before upload, remove, redact, or exclude names, student numbers, addresses, dates of birth, school identifiers, signatures, email addresses, phone numbers, and any other identifying details.
+- The user is responsible for checking that all uploaded content is appropriate, lawful, and de-identified before use.
+- Do not upload unlawful, abusive, hateful, offensive, or otherwise inappropriate material.
+- Outputs may contain transcription errors, OCR errors, formatting issues, incorrect marking, incorrect feedback, or incomplete text. All results must be checked by a teacher or other responsible human reviewer before being relied on.
+- This tool is an assistive workflow tool only. It does not replace professional judgement, school procedures, moderation, reporting requirements, privacy obligations, or records management obligations.
+- No warranty is given that the app will be uninterrupted, error-free, accurate, fit for a particular purpose, or suitable for any compliance obligation.
+- By using this demo, the user accepts responsibility for reviewing outputs and for ensuring their own compliance with applicable school, employer, legal, and privacy requirements.
+"""
+    )
+
+privacy_confirmed = st.checkbox(
+    "I confirm that any uploaded PDF has been checked and does not contain private or identifying student information, "
+    "and does not include unlawful, offensive, or inappropriate material (including hate speech, abuse, or illegal content).",
+    value=False,
+)
+
+st.caption(
+    "© Sandle Software — Tidy Text Suite. All rights reserved. "
+    "This software, including all underlying logic, workflows, and outputs, is the intellectual property "
+    "of Sandle Software and may not be copied, reproduced, reverse engineered, or redistributed without permission."
+)
 
 
 # -----------------------------
 # Layout
 # -----------------------------
-left, right = st.columns([1, 1])
+left_col, right_col = st.columns([1, 1], gap="large")
 
-
-# =============================
-# LEFT SIDE (INPUT)
-# =============================
-with left:
-
-    # Step 1
-    st.header("Step 1: Convert PDF")
-
-    file = st.file_uploader("Upload PDF", type=["pdf"])
-
-    mode = st.radio(
-        "Select type",
-        ["Scanned", "Handwritten"],
+with left_col:
+    # -------------------------
+    # Step 1: Upload + Convert
+    # -------------------------
+    st.subheader("Step 1: Upload and convert")
+    pdf_file = st.file_uploader(
+        "Student handwritten or scanned PDF",
+        type=["pdf"],
+        accept_multiple_files=False,
+        help="Upload a scanned handwritten response or a scanned document with printed text.",
     )
 
-    if st.button("Convert"):
-        if not privacy:
-            st.error("Confirm privacy first")
-        elif not file:
-            st.error("Upload a PDF")
+    conversion_mode = st.radio(
+        "Conversion path",
+        ["Scanned or printed text", "Handwritten student response"],
+        index=0,
+        help="Choose the path that best matches the document you are uploading.",
+    )
+
+    if conversion_mode == "Scanned or printed text":
+        st.success(
+            "This path uses Local Tesseract and is best for printed worksheets, typed pages, and most clean scans."
+        )
+    else:
+        st.warning(
+            "This path uses OpenAI Vision and is the preferred choice for handwritten student work."
+        )
+
+    if st.button("Convert PDF to text", use_container_width=True, type="primary"):
+        engine_label = "OpenAI Vision" if conversion_mode == "Handwritten student response" else "Local Tesseract"
+        log_usage("convert", engine_label)
+
+        if not privacy_confirmed:
+            st.error("Please confirm the privacy checkbox before uploading or processing any PDF.")
+        elif pdf_file is None:
+            st.error("Please upload a PDF first.")
         else:
-            res = run_conversion(file.read(), file.name, mode, api_key)
-            st.session_state.converted = res.typed_text
-            st.success("Converted")
+            with st.spinner("Converting PDF to typed text..."):
+                pdf_bytes = save_upload_to_bytes(pdf_file)
+                result = run_conversion(
+                    pdf_bytes=pdf_bytes,
+                    original_name=pdf_file.name,
+                    conversion_mode=conversion_mode,
+                    api_key=api_key,
+                    vision_model=vision_model,
+                )
+
+                st.session_state["converted_text"] = result.typed_text
+                st.session_state["conversion_report"] = result.report_text
+                st.session_state["exam_text_override"] = result.typed_text
+                st.session_state["current_base_name"] = sanitize_stem(pdf_file.name)
+
+                # Clear downstream outputs after reconversion
+                st.session_state["compare_report"] = ""
+                st.session_state["assessment_report"] = ""
+                st.session_state["feedback_report"] = ""
+
+            st.success("Conversion complete.")
             st.rerun()
 
-    # Step 2
-    st.header("Step 2: Provide Text")
-
-    exam_text = st.text_area(
-        "Exam Text (overrides OCR)",
-        value=st.session_state.converted,
-        height=200,
+    # -------------------------
+    # Step 2: Add / override text inputs
+    # -------------------------
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.subheader("Step 2: Add or override text inputs")
+    st.caption(
+        "You can paste or upload text instead of using OCR output. "
+        "If exam text is provided here, it will override the converted PDF text."
     )
 
-    notes = st.text_area("Study Notes", height=150)
-
-    criteria = st.text_area("Criteria / Rubric", height=150)
-
-    # Step 3
-    st.header("Step 3: Process")
-
-    if st.button("Compare"):
-        st.session_state.compare = run_compare(exam_text, notes, api_key).report_text
-        st.rerun()
-
-    if st.button("Mark"):
-        st.session_state.mark = run_mark(exam_text, criteria, year, api_key).report_text
-        st.rerun()
-
-    if st.button("Feedback"):
-        st.session_state.feedback = run_feedback(exam_text, criteria, year, api_key).report_text
-        st.rerun()
-
-
-# =============================
-# RIGHT SIDE (OUTPUT)
-# =============================
-with right:
-
-    st.header("Outputs")
-
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["Converted", "Compare", "Mark", "Feedback"]
+    exam_text_file = st.file_uploader(
+        "Exam text (TXT/MD)",
+        type=["txt", "md"],
+        accept_multiple_files=False,
+        key="exam_text_file",
     )
 
-    with tab1:
-        st.text_area("Converted Text", st.session_state.converted, height=300)
+    st.text_area(
+        "Exam text",
+        key="exam_text_override",
+        height=180,
+        placeholder="Paste the student's response here if not using the converted PDF text.",
+    )
 
-    with tab2:
-        st.text_area("Compare", st.session_state.compare, height=300)
+    notes_file = st.file_uploader(
+        "Study notes text (TXT/MD)",
+        type=["txt", "md"],
+        accept_multiple_files=False,
+        key="notes_text_file",
+    )
 
-    with tab3:
-        st.text_area("Marking", st.session_state.mark, height=300)
+    st.text_area(
+        "Study notes text",
+        key="notes_text_input",
+        height=140,
+        placeholder="Paste study notes here if not uploading a text file.",
+    )
 
-    with tab4:
-        st.text_area("Feedback", st.session_state.feedback, height=300)
+    criteria_file = st.file_uploader(
+        "Criteria / rubric text (TXT/MD)",
+        type=["txt", "md"],
+        accept_multiple_files=False,
+        key="criteria_text_file",
+    )
+
+    st.text_area(
+        "Criteria / rubric text",
+        key="criteria_text_input",
+        height=140,
+        placeholder="Paste criteria or rubric here if not uploading a text file.",
+    )
+
+    exam_text = resolve_exam_text(
+        exam_text_file=exam_text_file,
+        exam_text_manual=st.session_state["exam_text_override"],
+        converted_text=st.session_state["converted_text"],
+    )
+    notes_text = resolve_notes_text(
+        notes_file=notes_file,
+        notes_text_manual=st.session_state["notes_text_input"],
+    )
+    criteria_text = resolve_criteria_text(
+        criteria_file=criteria_file,
+        criteria_text_manual=st.session_state["criteria_text_input"],
+    )
+
+    # -------------------------
+    # Step 3: Process
+    # -------------------------
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.subheader("Step 3: Process")
+    st.caption("Use the current exam text above for comparison, marking, and feedback.")
+
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        if st.button("Compare with notes", use_container_width=True):
+            log_usage("compare", text_model)
+
+            if not privacy_confirmed:
+                st.error("Please confirm the privacy checkbox before processing any PDF content.")
+            elif not exam_text.strip():
+                st.error("Provide exam text first by converting a PDF or pasting exam text.")
+            elif not notes_text.strip():
+                st.error("Please upload or paste study notes text.")
+            else:
+                with st.spinner("Comparing student response with notes..."):
+                    result = run_notes_compare(
+                        student_text=exam_text,
+                        notes_text=notes_text,
+                        api_key=api_key,
+                    )
+                    st.session_state["compare_report"] = result.report_text
+                st.success("Notes comparison complete.")
+                st.rerun()
+
+    with col_b:
+        if st.button("Generate assessment report", use_container_width=True):
+            log_usage("assessment_report", text_model)
+
+            if not privacy_confirmed:
+                st.error("Please confirm the privacy checkbox before processing any PDF content.")
+            elif not exam_text.strip():
+                st.error("Provide exam text first by converting a PDF or pasting exam text.")
+            elif not criteria_text.strip():
+                st.error("Please upload or paste criteria / rubric text.")
+            else:
+                with st.spinner("Generating assessment report..."):
+                    result = run_assessment_report(
+                        exam_text=exam_text,
+                        criteria_text=criteria_text,
+                        notes_text=notes_text,
+                        year_level=year_level,
+                        api_key=api_key,
+                        text_model=text_model,
+                    )
+                    st.session_state["assessment_report"] = result.report_text
+                st.success("Assessment report complete.")
+                st.rerun()
+
+    with col_c:
+        if st.button("Generate feedback", use_container_width=True):
+            log_usage("feedback", text_model)
+
+            if not privacy_confirmed:
+                st.error("Please confirm the privacy checkbox before processing any PDF content.")
+            elif not exam_text.strip():
+                st.error("Provide exam text first by converting a PDF or pasting exam text.")
+            elif not criteria_text.strip():
+                st.error("Please upload or paste criteria / rubric text.")
+            else:
+                with st.spinner("Generating feedback..."):
+                    result = run_feedback(
+                        student_text=exam_text,
+                        criteria_text=criteria_text,
+                        year_level=year_level,
+                        api_key=api_key,
+                        text_model=text_model,
+                    )
+                    st.session_state["feedback_report"] = result.report_text
+                st.success("Feedback complete.")
+                st.rerun()
+
+
+with right_col:
+    st.subheader("Outputs")
+
+    if not any(
+        [
+            st.session_state["converted_text"].strip(),
+            st.session_state["compare_report"].strip(),
+            st.session_state["assessment_report"].strip(),
+            st.session_state["feedback_report"].strip(),
+        ]
+    ):
+        st.info(
+            "Workflow:\n"
+            "1. Upload and convert a PDF, or paste exam text in Step 2.\n"
+            "2. Add study notes and/or criteria.\n"
+            "3. Generate the output you need.\n"
+            "4. Download the report using the buttons below each output."
+        )
+
+    output_tabs = st.tabs(
+        [
+            "Converted text",
+            "Processing report",
+            "Notes compare",
+            "Assessment report",
+            "Feedback report",
+        ]
+    )
+
+    base_name = st.session_state["current_base_name"]
+
+    with output_tabs[0]:
+        st.text_area(
+            "Converted text output",
+            value=st.session_state["converted_text"],
+            height=320,
+            key="converted_text_output_area",
+        )
+        if st.session_state["converted_text"].strip():
+            download_text_button(
+                "Download converted text",
+                st.session_state["converted_text"],
+                timestamped_filename(base_name, "TTS_Converted"),
+            )
+
+    with output_tabs[1]:
+        st.text_area(
+            "Processing / conversion report",
+            value=st.session_state["conversion_report"],
+            height=320,
+            key="conversion_report_output_area",
+        )
+        if st.session_state["conversion_report"].strip():
+            download_text_button(
+                "Download conversion report",
+                st.session_state["conversion_report"],
+                timestamped_filename(base_name, "TTS_Conversion_Report"),
+            )
+
+    with output_tabs[2]:
+        st.text_area(
+            "Notes comparison report",
+            value=st.session_state["compare_report"],
+            height=320,
+            key="compare_report_output_area",
+        )
+        if st.session_state["compare_report"].strip():
+            download_text_button(
+                "Download notes comparison report",
+                st.session_state["compare_report"],
+                timestamped_filename(base_name, "TTS_Compare"),
+            )
+
+    with output_tabs[3]:
+        st.text_area(
+            "Assessment report",
+            value=st.session_state["assessment_report"],
+            height=360,
+            key="assessment_report_output_area",
+        )
+        if st.session_state["assessment_report"].strip():
+            download_text_button(
+                "Download assessment report",
+                st.session_state["assessment_report"],
+                timestamped_filename(base_name, "TTS_Assessment_Report"),
+            )
+
+    with output_tabs[4]:
+        st.text_area(
+            "Feedback report",
+            value=st.session_state["feedback_report"],
+            height=320,
+            key="feedback_report_output_area",
+        )
+        if st.session_state["feedback_report"].strip():
+            download_text_button(
+                "Download feedback report",
+                st.session_state["feedback_report"],
+                timestamped_filename(base_name, "TTS_Feedback"),
+            )
+
+st.divider()
+st.caption(
+    "Demo shell for Tidy Text Suite. Proprietary OCR, marking, and comparison logic remain server-side. "
+    "Results must always be checked by a human reviewer."
+)
