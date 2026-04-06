@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import tempfile
-import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -20,17 +18,12 @@ from engines.marker_engine import MarkerJob, run_marker_job
 
 
 APP_NAME = "Tidy Text Suite"
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.6.1"
 APP_TAGLINE = "AI-powered OCR, marking, copy checking, and feedback"
 
 # Change these if your desktop build uses different working model names
 DEFAULT_VISION_MODEL = "gpt-5.4-mini"
 DEFAULT_TEXT_MODEL = "gpt-5.4-mini"
-
-# Limiter settings
-USAGE_LIMIT_FILE = "usage_limits.json"
-AI_LIMIT_COUNT = 5
-AI_LIMIT_DAYS = 7
 
 
 # -----------------------------
@@ -63,7 +56,6 @@ SESSION_DEFAULTS = {
     "session_api_key": "",
     "api_key_source_label": "not set",
     "current_base_name": "TTS_Output",
-    "client_session_id": str(uuid.uuid4()),
 }
 
 for key, value in SESSION_DEFAULTS.items():
@@ -155,8 +147,8 @@ def extract_copy_band(ai_text: str, fallback: str = "LOW") -> str:
 
 def resolve_exam_text(exam_text_file, exam_text_manual: str) -> str:
     """
-    Important behavior:
-    This does not fall back to OCR output.
+    Important change:
+    This no longer falls back to OCR output.
     Users must explicitly paste/upload the exam text they want processed.
     """
     if exam_text_file is not None:
@@ -183,110 +175,6 @@ def resolve_criteria_text(criteria_file, criteria_text_manual: str) -> str:
 
 
 # -----------------------------
-# Hybrid limiter helpers
-# -----------------------------
-def get_client_ip() -> str:
-    try:
-        return requests.get("https://api.ipify.org", timeout=5).text
-    except Exception:
-        return "unknown"
-
-
-def load_usage_limit_data() -> list[dict]:
-    path = Path(USAGE_LIMIT_FILE)
-    if not path.exists():
-        return []
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-
-def save_usage_limit_data(data: list[dict]) -> None:
-    Path(USAGE_LIMIT_FILE).write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def prune_old_usage_entries(data: list[dict]) -> list[dict]:
-    cutoff = datetime.now() - timedelta(days=AI_LIMIT_DAYS)
-    kept = []
-    for row in data:
-        try:
-            ts = datetime.fromisoformat(row["timestamp"])
-            if ts >= cutoff:
-                kept.append(row)
-        except Exception:
-            continue
-    return kept
-
-
-def count_recent_ai_usage(ip: str, session_id: str) -> tuple[int, int]:
-    data = prune_old_usage_entries(load_usage_limit_data())
-    ip_count = 0
-    session_count = 0
-
-    for row in data:
-        if row.get("kind") != "ai_action":
-            continue
-        if row.get("ip") == ip:
-            ip_count += 1
-        if row.get("session_id") == session_id:
-            session_count += 1
-
-    return ip_count, session_count
-
-
-def can_use_shared_ai_key() -> tuple[bool, str]:
-    """
-    Shared/server key is limited.
-    User-supplied session keys are not limited.
-    """
-    key_source = st.session_state.get("api_key_source_label", "not set")
-
-    if key_source == "session key":
-        return True, "Using your own session API key. Shared demo limiter is bypassed."
-
-    ip = get_client_ip()
-    session_id = st.session_state.get("client_session_id", "unknown")
-
-    ip_count, session_count = count_recent_ai_usage(ip, session_id)
-
-    if ip_count >= AI_LIMIT_COUNT or session_count >= AI_LIMIT_COUNT:
-        return (
-            False,
-            "Free demo limit reached for shared AI usage. Please wait until the weekly window resets or enter your own API key in the sidebar."
-        )
-
-    remaining = AI_LIMIT_COUNT - max(ip_count, session_count)
-    return True, f"Shared AI uses remaining this week: {remaining}"
-
-
-def record_ai_usage(action: str) -> None:
-    key_source = st.session_state.get("api_key_source_label", "not set")
-
-    # Do not track/limit user-supplied keys for quota purposes
-    if key_source == "session key":
-        return
-
-    ip = get_client_ip()
-    session_id = st.session_state.get("client_session_id", "unknown")
-
-    data = prune_old_usage_entries(load_usage_limit_data())
-    data.append(
-        {
-            "timestamp": datetime.now().isoformat(),
-            "kind": "ai_action",
-            "action": action,
-            "ip": ip,
-            "session_id": session_id,
-        }
-    )
-    save_usage_limit_data(data)
-
-
-# -----------------------------
 # Core functions
 # -----------------------------
 def run_conversion(
@@ -309,7 +197,8 @@ def run_conversion(
         model_name = vision_model
         if not api_key:
             raise RuntimeError(
-                "No OpenAI API key is available for handwriting OCR. Add one in the sidebar for this session, or configure OPENAI_API_KEY."
+                "No OpenAI API key is available for handwriting OCR. "
+                "Add one in the sidebar for this session, or configure OPENAI_API_KEY."
             )
     else:
         engine_name = "Local Tesseract"
@@ -363,7 +252,8 @@ def run_conversion(
 def run_notes_compare(student_text: str, notes_text: str, api_key: Optional[str]) -> TextResult:
     if not api_key:
         raise RuntimeError(
-            "No OpenAI API key is available for notes comparison. Add one in the sidebar for this session, or configure OPENAI_API_KEY."
+            "No OpenAI API key is available for notes comparison. "
+            "Add one in the sidebar for this session, or configure OPENAI_API_KEY."
         )
 
     backend.client = OpenAI(api_key=api_key)
@@ -499,7 +389,8 @@ def run_assessment_report(
 ) -> TextResult:
     if not api_key:
         raise RuntimeError(
-            "No OpenAI API key is available for marking. Add one in the sidebar for this session, or configure OPENAI_API_KEY."
+            "No OpenAI API key is available for marking. "
+            "Add one in the sidebar for this session, or configure OPENAI_API_KEY."
         )
 
     exam_path = save_text_to_tempfile(exam_text)
@@ -540,7 +431,8 @@ def run_feedback(
 ) -> TextResult:
     if not api_key:
         raise RuntimeError(
-            "No OpenAI API key is available for feedback generation. Add one in the sidebar for this session, or configure OPENAI_API_KEY."
+            "No OpenAI API key is available for feedback generation. "
+            "Add one in the sidebar for this session, or configure OPENAI_API_KEY."
         )
 
     client = OpenAI(api_key=api_key)
@@ -632,12 +524,6 @@ with st.sidebar:
     else:
         st.warning("No OpenAI API key detected yet.")
 
-    allowed, limit_message = can_use_shared_ai_key()
-    if st.session_state.get("api_key_source_label") == "session key":
-        st.info(limit_message)
-    else:
-        st.caption(limit_message)
-
     with st.expander("How to use your own API key for this session", expanded=False):
         st.markdown(
             """
@@ -685,7 +571,8 @@ with st.sidebar:
 
     st.subheader("Security notes")
     st.caption(
-        "Keep long-term API keys in Streamlit secrets or environment variables. Do not hardcode them into this file."
+        "Keep long-term API keys in Streamlit secrets or environment variables. "
+        "Do not hardcode them into this file."
     )
 
 
@@ -696,7 +583,9 @@ st.title(APP_NAME)
 st.caption(f"v{APP_VERSION} • {APP_TAGLINE}")
 
 st.warning(
-    "Privacy warning: Do not upload PDFs that contain private or identifying student information. Best practice is to remove, redact, or exclude names, student numbers, addresses, date of birth, school IDs, or any other identifying details before upload."
+    "Privacy warning: Do not upload PDFs that contain private or identifying student information. "
+    "Best practice is to remove, redact, or exclude names, student numbers, addresses, date of birth, "
+    "school IDs, or any other identifying details before upload."
 )
 
 st.info(
@@ -721,12 +610,15 @@ with st.expander("Important use conditions, privacy notice, and disclaimers", ex
     )
 
 privacy_confirmed = st.checkbox(
-    "I confirm that any uploaded PDF has been checked and does not contain private or identifying student information, and does not include unlawful, offensive, or inappropriate material (including hate speech, abuse, or illegal content).",
+    "I confirm that any uploaded PDF has been checked and does not contain private or identifying student information, "
+    "and does not include unlawful, offensive, or inappropriate material (including hate speech, abuse, or illegal content).",
     value=False,
 )
 
 st.caption(
-    "© Sandle Software — Tidy Text Suite. All rights reserved. This software, including all underlying logic, workflows, and outputs, is the intellectual property of Sandle Software and may not be copied, reproduced, reverse engineered, or redistributed without permission."
+    "© Sandle Software — Tidy Text Suite. All rights reserved. "
+    "This software, including all underlying logic, workflows, and outputs, is the intellectual property "
+    "of Sandle Software and may not be copied, reproduced, reverse engineered, or redistributed without permission."
 )
 
 
@@ -771,38 +663,28 @@ with left_col:
             st.error("Please confirm the privacy checkbox before uploading or processing any PDF.")
         elif pdf_file is None:
             st.error("Please upload a PDF first.")
-        elif conversion_mode == "Handwritten student response":
-            allowed, limit_message = can_use_shared_ai_key()
-            if not allowed:
-                st.error(limit_message)
-                st.stop()
         else:
-            pass
+            with st.spinner("Converting PDF to typed text..."):
+                pdf_bytes = save_upload_to_bytes(pdf_file)
+                result = run_conversion(
+                    pdf_bytes=pdf_bytes,
+                    original_name=pdf_file.name,
+                    conversion_mode=conversion_mode,
+                    api_key=api_key,
+                    vision_model=vision_model,
+                )
 
-        with st.spinner("Converting PDF to typed text..."):
-            pdf_bytes = save_upload_to_bytes(pdf_file)
-            result = run_conversion(
-                pdf_bytes=pdf_bytes,
-                original_name=pdf_file.name,
-                conversion_mode=conversion_mode,
-                api_key=api_key,
-                vision_model=vision_model,
-            )
+                st.session_state["converted_text"] = result.typed_text
+                st.session_state["conversion_report"] = result.report_text
+                st.session_state["current_base_name"] = sanitize_stem(pdf_file.name)
 
-            st.session_state["converted_text"] = result.typed_text
-            st.session_state["conversion_report"] = result.report_text
-            st.session_state["current_base_name"] = sanitize_stem(pdf_file.name)
+                # Clear downstream outputs after reconversion
+                st.session_state["compare_report"] = ""
+                st.session_state["assessment_report"] = ""
+                st.session_state["feedback_report"] = ""
 
-            # Clear downstream outputs after reconversion
-            st.session_state["compare_report"] = ""
-            st.session_state["assessment_report"] = ""
-            st.session_state["feedback_report"] = ""
-
-            if conversion_mode == "Handwritten student response":
-                record_ai_usage("handwriting_ocr")
-
-        st.success("Conversion complete. Review the OCR in the output panel, then paste the final text you want assessed into the Exam text field below.")
-        st.rerun()
+            st.success("Conversion complete. Review the OCR in the output panel, then paste the final text you want assessed into the Exam text field below.")
+            st.rerun()
 
     # -------------------------
     # Step 2: Add / override text inputs
@@ -810,7 +692,8 @@ with left_col:
     st.markdown("<br>", unsafe_allow_html=True)
     st.subheader("Step 2: Add text for processing")
     st.caption(
-        "OCR output does not auto-fill the Exam text field. Paste or upload only the exact exam text you want used for comparison, marking, and feedback."
+        "OCR output does not auto-fill the Exam text field. "
+        "Paste or upload only the exact exam text you want used for comparison, marking, and feedback."
     )
 
     exam_text_file = st.file_uploader(
@@ -891,11 +774,6 @@ with left_col:
             elif not notes_text.strip():
                 st.error("Please upload or paste study notes text.")
             else:
-                allowed, limit_message = can_use_shared_ai_key()
-                if not allowed:
-                    st.error(limit_message)
-                    st.stop()
-
                 with st.spinner("Comparing student response with notes..."):
                     result = run_notes_compare(
                         student_text=exam_text,
@@ -903,8 +781,6 @@ with left_col:
                         api_key=api_key,
                     )
                     st.session_state["compare_report"] = result.report_text
-                    record_ai_usage("compare")
-
                 st.success("Notes comparison complete.")
                 st.rerun()
 
@@ -919,11 +795,6 @@ with left_col:
             elif not criteria_text.strip():
                 st.error("Please upload or paste criteria / rubric text.")
             else:
-                allowed, limit_message = can_use_shared_ai_key()
-                if not allowed:
-                    st.error(limit_message)
-                    st.stop()
-
                 with st.spinner("Generating assessment report..."):
                     result = run_assessment_report(
                         exam_text=exam_text,
@@ -934,8 +805,6 @@ with left_col:
                         text_model=text_model,
                     )
                     st.session_state["assessment_report"] = result.report_text
-                    record_ai_usage("assessment_report")
-
                 st.success("Assessment report complete.")
                 st.rerun()
 
@@ -950,11 +819,6 @@ with left_col:
             elif not criteria_text.strip():
                 st.error("Please upload or paste criteria / rubric text.")
             else:
-                allowed, limit_message = can_use_shared_ai_key()
-                if not allowed:
-                    st.error(limit_message)
-                    st.stop()
-
                 with st.spinner("Generating feedback..."):
                     result = run_feedback(
                         student_text=exam_text,
@@ -964,8 +828,6 @@ with left_col:
                         text_model=text_model,
                     )
                     st.session_state["feedback_report"] = result.report_text
-                    record_ai_usage("feedback")
-
                 st.success("Feedback complete.")
                 st.rerun()
 
@@ -1007,6 +869,7 @@ with right_col:
             "Converted text output",
             value=st.session_state["converted_text"],
             height=320,
+            
         )
         if st.session_state["converted_text"].strip():
             download_text_button(
@@ -1020,6 +883,7 @@ with right_col:
             "Processing / conversion report",
             value=st.session_state["conversion_report"],
             height=320,
+            
         )
         if st.session_state["conversion_report"].strip():
             download_text_button(
@@ -1033,6 +897,7 @@ with right_col:
             "Notes comparison report",
             value=st.session_state["compare_report"],
             height=320,
+            
         )
         if st.session_state["compare_report"].strip():
             download_text_button(
@@ -1046,6 +911,7 @@ with right_col:
             "Assessment report",
             value=st.session_state["assessment_report"],
             height=360,
+            
         )
         if st.session_state["assessment_report"].strip():
             download_text_button(
@@ -1059,6 +925,7 @@ with right_col:
             "Feedback report",
             value=st.session_state["feedback_report"],
             height=320,
+            
         )
         if st.session_state["feedback_report"].strip():
             download_text_button(
@@ -1069,5 +936,6 @@ with right_col:
 
 st.divider()
 st.caption(
-    "Demo shell for Tidy Text Suite. Proprietary OCR, marking, and comparison logic remain server-side. Results must always be checked by a human reviewer."
+    "Demo shell for Tidy Text Suite. Proprietary OCR, marking, and comparison logic remain server-side. "
+    "Results must always be checked by a human reviewer."
 )
