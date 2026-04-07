@@ -1006,14 +1006,25 @@ with right_col:
             st.session_state["feedback_report"].strip(),
         ]
     ):
-        st.info(
-            "Workflow:\n"
-            "1. Upload and convert a PDF.\n"
-            "2. Review the OCR in the output panel.\n"
-            "3. Paste the final exam text you want processed into the Exam text field.\n"
-            "4. Add study notes and/or criteria.\n"
-            "5. Generate the output you need and download it using the buttons below each output."
-        )
+
+            st.info("""
+            **Start here (Quick test):**
+            1. Upload ONE student PDF
+            2. Click Convert
+            3. Copy into Exam Text
+            4. Click Generate Report
+
+👉              Just try one student work sample first.
+            """)
+            
+            st.info(
+                 "Full workflow:\n"
+                 "1. Upload and convert a PDF.\n"
+                 "2. Review the OCR in the output panel.\n"
+                 "3. Paste the final exam text into the Exam text field.\n"
+                 "4. Add study notes and/or criteria.\n"
+                 "5. Generate output and download it below.\n"
+            )
 
     with st.expander("Suggested scanning practice", expanded=False):
         st.markdown(
@@ -1112,7 +1123,7 @@ with right_col:
     show_optional_link_button(
         "Open feedback form",
         FEEDBACK_FORM_URL,
-        help_text="Add your Google Form link here later to collect optional user feedback.",
+        help_text="https://forms.gle/2ktPa1hA9e8Xe2feA",
     )
 
 st.divider()
